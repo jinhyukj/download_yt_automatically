@@ -749,13 +749,21 @@ def run_downloads(
     slack_interval: int,
 ) -> None:
     safe_mkdir(output_dir)
-    logs_dir = os.path.join(output_dir, "logs")
     json_logs_dir = os.path.join(output_dir, "json_logs")
-    safe_mkdir(logs_dir)
     safe_mkdir(json_logs_dir)
 
+    # Per-run log directory named by start time (e.g. logs/2026-03-24_19-35-12/)
+    run_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    logs_dir = os.path.join(output_dir, "logs", run_timestamp)
+    safe_mkdir(logs_dir)
+
+    # Per-run log files
     permanent_file = os.path.join(logs_dir, "permanent_failures.txt")
     failed_urls_file = os.path.join(logs_dir, "failed_urls.txt")
+
+    # Also maintain a cumulative permanent_failures.txt at the top level
+    # so that future runs can skip known-dead URLs
+    cumulative_permanent_file = os.path.join(output_dir, "logs", "permanent_failures.txt")
 
     # ── Create proxy pool with background health checks ─────────────────
     proxy_pool: Optional[ProxyPool] = None
@@ -775,7 +783,8 @@ def run_downloads(
         proxy_pool.start()  # start background health-check thread
 
     # Load permanently failed URLs
-    perm_failed = load_permanent_failures(permanent_file)
+    # Load from cumulative file (across all runs)
+    perm_failed = load_permanent_failures(cumulative_permanent_file)
     if perm_failed:
         print(f"Loaded {len(perm_failed)} permanently unavailable URLs")
 
@@ -887,6 +896,7 @@ def run_downloads(
                     furl.write(f"{url}\t{failure_type}\t{msg}\n")
                 if failure_type == "permanent":
                     append_permanent_failure(permanent_file, url, msg)
+                    append_permanent_failure(cumulative_permanent_file, url, msg)
                 print(f"[FAIL:{failure_type}] {video_id} | {categorize_error_for_slack(msg)}")
 
             maybe_send_slack_update()

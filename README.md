@@ -4,11 +4,13 @@ Fast parallel YouTube clip downloader with proxy rotation, cookie management, an
 
 Downloads video clips specified in a JSON file using yt-dlp, with:
 - **Round-robin proxy rotation** across multiple NordVPN SOCKS5 regions
-- **Per-proxy rate limiting** to avoid NordVPN throttling
+- **Per-proxy rate limiting** (semaphores) to avoid NordVPN throttling
 - **Automatic proxy health checks** every 5 minutes (dead proxies are skipped, recovered ones re-added)
-- **Cookie pool support** for age-restricted content
+- **Direct-IP fallback** — when all proxies fail for a URL, retries without proxy to bypass proxy-IP-based bot detection
+- **Cookie pool support** for age-restricted content (used only as last resort)
 - **Resume support** — re-run the same command and already-downloaded clips are skipped
-- **Slack webhook notifications** with download progress and failure breakdowns
+- **Slack webhook notifications** with download progress, failure breakdowns by reason, and raw error messages for uncategorized failures
+- **Per-run log files** — each run gets its own timestamped log directory
 - **Video-only flat output** — all `.mp4` files in one directory
 
 ## Files
@@ -101,7 +103,7 @@ The credentials used here are **not** your NordVPN account email/password. They 
 
 ### 3. Set up cookies (optional but recommended)
 
-Cookies are used as a last resort when YouTube requires authentication (e.g., age-restricted videos). The pipeline tries without cookies first because cookie files can cause YouTube to restrict available video formats.
+Cookies are used as a **last resort** when YouTube requires authentication (e.g., age-restricted videos). The pipeline tries without cookies first because cookie files can cause YouTube to restrict available video formats.
 
 #### Single account
 
@@ -220,45 +222,85 @@ python download_clips.py \
 | `--browser` | None | Extract cookies from browser directly |
 | `--extractor-args` | None | Pass through to yt-dlp `--extractor-args` |
 
+## How the Pipeline Works
+
+### Download flow per URL
+
+Each URL goes through this retry sequence:
+
+```
+Attempt 1-5:  Different proxy each time (round-robin) + no cookies
+              Exponential backoff between retries (3^n + jitter seconds)
+Fallback 1:   Direct IP (no proxy) + no cookies
+              Bypasses proxy-IP-based bot detection ("page needs to be reloaded", "sign in")
+Fallback 2:   Proxy + cookie from pool
+              For age-restricted or auth-required content
+```
+
+Permanent errors (video unavailable, account terminated, no video streams) stop retries immediately.
+
+### Proxy management
+
+- **Startup health check**: all proxies are tested before downloading begins; dead ones are excluded
+- **Background recheck**: every 5 minutes, all proxies are retested. Dead proxies are removed and recovered proxies are re-added. Changes are reported via Slack.
+- **Per-proxy semaphore**: max 2 concurrent downloads per proxy to avoid NordVPN throttling
+- **Round-robin assignment**: each retry picks the next proxy in rotation (shared counter across all workers)
+
+### Cookie strategy
+
+Cookies are **avoided by default** because they can cause YouTube to restrict video format availability (returning only storyboard images instead of real video). They are only used as a last-resort fallback after all proxy retries and the direct-IP fallback have failed.
+
 ### Resume
 
 The pipeline is fully re-runnable. Just run the same command again:
 - Already-downloaded clips are skipped (checked via `json_logs/`)
-- Permanently unavailable videos are skipped (checked via `logs/permanent_failures.txt`)
+- Permanently unavailable videos are skipped (checked via cumulative `logs/permanent_failures.txt`)
 - Previously-failed transient errors (socks error, rate limit, etc.) are retried
 
 ### Slack Notifications
 
 The pipeline sends Slack messages at these points:
-- **Start** — URL count, worker/proxy configuration
+- **Start** — URL count, worker/proxy configuration, resume count
 - **Every N URLs** (default 10) — progress, downloaded count, failure breakdown by reason
-- **Proxy health changes** — when proxies die or recover during the run
+- **Proxy health changes** — when the background recheck detects proxies dying or recovering
 - **End** — final summary with totals
 
-Failure reasons are categorized (e.g., "video unavailable", "socks error", "expired cookie", "rate limited"). Uncategorized errors include the raw error message for diagnosis.
+Failure reasons are categorized (e.g., "video unavailable", "socks error", "expired cookie", "rate limited", "no video streams"). Uncategorized ("other") errors include the raw error message and video ID for diagnosis.
 
 ## Output Structure
 
 ```
 videos_output/
-  dQw4w9WgXcQ_10.500_25.000.mp4
+  dQw4w9WgXcQ_10.500_25.000.mp4       # Downloaded clips (flat, video-only)
   dQw4w9WgXcQ_30.000_45.500.mp4
   abc123xyz_5.200_18.700.mp4
   ...
-  json_logs/           # Per-clip download logs (for resume)
+  json_logs/                            # Per-clip download logs (for resume, shared across runs)
+    dQw4w9WgXcQ_10.500_25.000.json
+    ...
   logs/
-    failed_urls.txt          # All failures with error messages
-    permanent_failures.txt   # Videos that can never be downloaded
+    permanent_failures.txt              # Cumulative (read on startup to skip known-dead URLs)
+    2026-03-24_19-35-12/                # Run 1 logs
+      failed_urls.txt
+      permanent_failures.txt
+    2026-03-24_20-10-45/                # Run 2 logs
+      failed_urls.txt
+      permanent_failures.txt
 ```
 
-All video files are saved as `.mp4` in a flat directory (no subdirectories per video).
+- **Video files**: all `.mp4` in the root of the output directory (flat, no subdirectories per video)
+- **json_logs/**: shared across runs for resume support
+- **logs/**: each run creates a timestamped subdirectory with its own `failed_urls.txt` and `permanent_failures.txt`
+- **logs/permanent_failures.txt**: cumulative file at the top level, read by future runs to skip known-dead URLs
 
 ## Troubleshooting
 
 | Problem | Solution |
 |---------|----------|
 | All proxies show as DEAD | NordVPN may have temporarily throttled your credentials. Wait 5-10 minutes and try again. |
-| "Sign in to confirm you're not a bot" | The proxy IP got flagged by YouTube. The pipeline retries with different proxies automatically. If persistent, reduce `--workers`. |
-| "Requested format is not available" | The video only has storyboard images, no real video streams. This is classified as a permanent failure and skipped on re-runs. |
-| SOCKS errors during download | Too many concurrent connections. The pipeline has per-proxy semaphores (max 2 concurrent per proxy) and retries with backoff. |
-| Cookies causing "format not available" | The pipeline avoids cookies by default for this reason. Cookies are only used as a last resort for age-restricted content. |
+| "The page needs to be reloaded" | YouTube bot detection on the proxy IP. The pipeline retries with different proxies, then falls back to direct IP (no proxy). |
+| "Sign in to confirm you're not a bot" | Same as above — proxy IP flagged. Automatic retry with different proxy + direct-IP fallback. |
+| "Requested format is not available" | The video only has storyboard images, no real video streams. Classified as permanent failure, skipped on re-runs. |
+| SOCKS errors during download | Too many concurrent connections to NordVPN. The pipeline has per-proxy semaphores (max 2 concurrent) and retries with exponential backoff. |
+| Cookies causing "format not available" | Known issue. The pipeline avoids cookies by default. Cookies are only used as a last resort for age-restricted content. |
+| "SOCKS5 authentication failed" | NordVPN credentials may have been rotated. Check your service credentials at [my.nordaccount.com](https://my.nordaccount.com/). |
