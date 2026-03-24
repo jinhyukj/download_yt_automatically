@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Wrapper around ffmpeg that injects -http_proxy for SOCKS5 proxy support.
+# yt-dlp calls this instead of the real ffmpeg so that video stream downloads
+# go through the proxy.
+#
+# REAL_FFMPEG: set this to the path of your actual ffmpeg binary.
+#   - Auto-detected from PATH if not set.
+REAL_FFMPEG="${REAL_FFMPEG:-$(which ffmpeg.real 2>/dev/null || which ffmpeg 2>/dev/null)}"
+PROXY="${FFMPEG_HTTP_PROXY:-http://127.0.0.1:8080}"
+
+# Check if any -i argument is a URL (needs proxy)
+has_url=false
+for arg in "$@"; do
+    if [[ "$arg" == https://* ]] || [[ "$arg" == http://* ]]; then
+        has_url=true
+        break
+    fi
+done
+
+if [[ "$has_url" == "true" ]]; then
+    exec "$REAL_FFMPEG" -http_proxy "$PROXY" "$@"
+else
+    exec "$REAL_FFMPEG" "$@"
+fi
