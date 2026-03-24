@@ -261,11 +261,37 @@ The pipeline is fully re-runnable. Just run the same command again:
 
 The pipeline sends Slack messages at these points:
 - **Start** — URL count, worker/proxy configuration, resume count
-- **Every N URLs** (default 10) — progress, downloaded count, failure breakdown by reason
+- **Every N URLs** (default 10) — progress with per-batch and cumulative stats
 - **Proxy health changes** — when the background recheck detects proxies dying or recovering
 - **End** — final summary with totals
 
-Failure reasons are categorized (e.g., "video unavailable", "socks error", "expired cookie", "rate limited", "no video streams"). Uncategorized ("other") errors include the raw error message and video ID for diagnosis.
+Each progress update includes:
+- **Cumulative totals** — total clips downloaded, skipped, and failed
+- **Download methods** — how clips were downloaded across the entire run (`proxy`, `direct`, `proxy+cookie`)
+- **This batch** — clips downloaded and failures in the last N URLs since the previous Slack update, with per-method breakdown
+- **Failure breakdown** — categorized reasons (e.g., "video unavailable", "socks error", "expired cookie", "rate limited", "no video streams")
+- **Uncategorized errors** — raw error messages with video IDs for any "other" failures
+
+Example Slack message:
+```
+:arrows_counterclockwise: Download Progress
+URLs processed: 20/17944
+Clips downloaded: 145
+Skipped (already done): 257
+Skipped (permanently unavailable): 13
+Elapsed: 4.2 min
+Download methods: proxy: 130, direct: 12, proxy+cookie: 3
+
+This batch:
+  Downloaded: 78 clips (proxy: 65, direct: 11, proxy+cookie: 2)
+  Failed: socks error: 8, expired cookie: 3
+
+Total failures by reason:
+  • socks error: 12
+  • expired cookie: 5
+  • video unavailable: 3
+  Total failed clips: 20
+```
 
 ## Output Structure
 
