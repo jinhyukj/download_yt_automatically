@@ -548,7 +548,7 @@ def download_one_url(
     Download all segments for one URL with retry logic.
     On transient failures, retries with a different proxy.
     Uses ProxyPool for round-robin + per-proxy semaphores + live health checks.
-    Returns (return_code, stdout_or_error).
+    Returns (return_code, stdout_or_error, method) where method describes how it was downloaded.
     """
     # Build section args
     section_args: List[str] = []
@@ -560,7 +560,7 @@ def download_one_url(
             f"*{seconds_to_time_string(s)}-{seconds_to_time_string(e)}",
         ])
     if not section_args:
-        return 1, "No valid segments"
+        return 1, "No valid segments", "none"
 
     def pick_proxy():
         if proxy_pool is None:
@@ -602,12 +602,12 @@ def download_one_url(
             None, browser, proxy_url, http_port, extractor_args,
         )
         if rc == 0:
-            return 0, msg
+            return 0, msg, "proxy"
 
         last_err = msg
         failure_type = classify_failure(msg)
         if failure_type == "permanent":
-            return rc, msg
+            return rc, msg, "proxy"
 
         # Transient: backoff with longer waits to let NordVPN recover
         if attempt < max_retries - 1:
@@ -622,9 +622,9 @@ def download_one_url(
         None, browser, None, None, extractor_args,
     )
     if rc == 0:
-        return 0, msg
+        return 0, msg, "direct"
     if classify_failure(msg) == "permanent":
-        return rc, msg
+        return rc, msg, "direct"
 
     # Fallback 2: try WITH a cookie (for age-restricted etc.)
     cookie = pick_cookie()
@@ -634,13 +634,13 @@ def download_one_url(
             cookie, browser, proxy_url, http_port, extractor_args,
         )
         if rc == 0:
-            return 0, msg
+            return 0, msg, "proxy+cookie"
         # "format not available" from cookie is a cookie problem, not permanent
         if "requested format is not available" in msg.lower():
-            return 1, last_err
+            return 1, last_err, "proxy+cookie"
         last_err = msg
 
-    return 1, last_err
+    return 1, last_err, "failed"
 
 
 # ── Stats tracker (thread-safe) ──────────────────────────────────────────────
@@ -656,21 +656,30 @@ class DownloadStats:
         self.failure_categories: Dict[str, int] = defaultdict(int)
         # Store (video_id, raw_error) for uncategorized failures so Slack can show them
         self.uncategorized_failures: List[Tuple[str, str]] = []
+        # Per-method download counts (proxy, direct, proxy+cookie)
+        self.method_counts: Dict[str, int] = defaultdict(int)
+        # Per-interval tracking (reset after each Slack update)
+        self.interval_segments_downloaded = 0
+        self.interval_method_counts: Dict[str, int] = defaultdict(int)
+        self.interval_failure_categories: Dict[str, int] = defaultdict(int)
         self.start_time = datetime.now()
 
-    def record_success(self, num_segments: int) -> None:
+    def record_success(self, num_segments: int, method: str = "proxy") -> None:
         with self._lock:
             self.urls_processed += 1
             self.urls_downloaded += 1
             self.segments_downloaded += num_segments
+            self.method_counts[method] += num_segments
+            self.interval_segments_downloaded += num_segments
+            self.interval_method_counts[method] += num_segments
 
     def record_failure(self, error_msg: str, num_segments: int, video_id: str = "") -> None:
         with self._lock:
             self.urls_processed += 1
             category = categorize_error_for_slack(error_msg)
             self.failure_categories[category] += num_segments
+            self.interval_failure_categories[category] += num_segments
             if category == "other":
-                # Truncate long errors but keep enough to diagnose
                 short_err = error_msg[:200].replace("\n", " ")
                 self.uncategorized_failures.append((video_id, short_err))
 
@@ -683,6 +692,13 @@ class DownloadStats:
         with self._lock:
             self.segments_skipped_resume += num_segments
 
+    def reset_interval(self) -> None:
+        """Reset per-interval counters after a Slack update."""
+        with self._lock:
+            self.interval_segments_downloaded = 0
+            self.interval_method_counts.clear()
+            self.interval_failure_categories.clear()
+
     def snapshot(self) -> dict:
         with self._lock:
             elapsed = (datetime.now() - self.start_time).total_seconds()
@@ -694,8 +710,23 @@ class DownloadStats:
                 "segments_skipped_resume": self.segments_skipped_resume,
                 "failure_categories": dict(self.failure_categories),
                 "uncategorized_failures": list(self.uncategorized_failures),
+                "method_counts": dict(self.method_counts),
+                "interval_segments_downloaded": self.interval_segments_downloaded,
+                "interval_method_counts": dict(self.interval_method_counts),
+                "interval_failure_categories": dict(self.interval_failure_categories),
                 "elapsed_seconds": elapsed,
             }
+
+
+def _format_method_counts(method_counts: dict) -> str:
+    """Format method counts like 'proxy: 15, direct: 3, proxy+cookie: 1'."""
+    if not method_counts:
+        return "none"
+    parts = []
+    for method in ["proxy", "direct", "proxy+cookie"]:
+        if method in method_counts:
+            parts.append(f"{method}: {method_counts[method]}")
+    return ", ".join(parts) if parts else "none"
 
 
 def format_slack_update(stats: dict, total_urls: int, is_final: bool = False) -> str:
@@ -711,9 +742,28 @@ def format_slack_update(stats: dict, total_urls: int, is_final: bool = False) ->
         f"Elapsed: {elapsed_min:.1f} min",
     ]
 
+    # Download method breakdown (cumulative)
+    method_counts = stats.get("method_counts", {})
+    if method_counts:
+        lines.append(f"Download methods: {_format_method_counts(method_counts)}")
+
+    # Per-interval stats (what happened since last Slack update)
+    interval_dl = stats.get("interval_segments_downloaded", 0)
+    interval_methods = stats.get("interval_method_counts", {})
+    interval_failures = stats.get("interval_failure_categories", {})
+    if not is_final and (interval_dl > 0 or interval_failures):
+        lines.append("")
+        lines.append(f"*This batch:*")
+        if interval_dl > 0:
+            lines.append(f"  Downloaded: {interval_dl} clips ({_format_method_counts(interval_methods)})")
+        if interval_failures:
+            fail_parts = [f"{r}: {c}" for r, c in sorted(interval_failures.items(), key=lambda x: -x[1])]
+            lines.append(f"  Failed: {', '.join(fail_parts)}")
+
+    # Cumulative failures
     if stats["failure_categories"]:
         lines.append("")
-        lines.append("*Failures by reason:*")
+        lines.append("*Total failures by reason:*")
         for reason, count in sorted(stats["failure_categories"].items(), key=lambda x: -x[1]):
             lines.append(f"  • {reason}: {count}")
 
@@ -850,6 +900,7 @@ def run_downloads(
         if snap["urls_processed"] - last_slack_count >= slack_interval:
             last_slack_count = snap["urls_processed"]
             send_slack(slack_webhook, format_slack_update(snap, total_urls))
+            stats.reset_interval()
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {}
@@ -868,12 +919,12 @@ def run_downloads(
             url, segs = futures[fut]
             video_id = get_video_id(url)
             try:
-                rc, msg = fut.result()
+                rc, msg, method = fut.result()
             except Exception as exc:
-                rc, msg = 1, f"Exception: {exc}"
+                rc, msg, method = 1, f"Exception: {exc}", "failed"
 
             if rc == 0:
-                stats.record_success(len(segs))
+                stats.record_success(len(segs), method=method)
                 # Write JSON logs for resume support
                 for s, e in segs:
                     # Find the actual video file
