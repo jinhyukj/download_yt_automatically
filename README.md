@@ -86,7 +86,18 @@ Available regions and their default ports:
 | Amsterdam | `amsterdam.nl.socks.nordhold.net` | 8087 |
 | Stockholm | `stockholm.se.socks.nordhold.net` | 8088 |
 
-> **Where to find NordVPN credentials**: Log in to your NordVPN account dashboard, go to **Services** > **NordVPN**, and look for "Service credentials" (username and password for manual connections). These are different from your NordVPN account login.
+#### How to get NordVPN SOCKS5 credentials
+
+The credentials used here are **not** your NordVPN account email/password. They are separate "service credentials" for manual connections.
+
+1. Log in to [my.nordaccount.com](https://my.nordaccount.com/)
+2. Go to **Services** > **NordVPN**
+3. Scroll down to **Manual Setup**
+4. Select the **OpenVPN / IKEv2** tab (or **Service credentials** depending on the UI version)
+5. You will see a **Username** (a long random string like `LTxu...`) and a **Password** — these are your SOCKS5 credentials
+6. Use them as `--proxy-creds 'USERNAME:PASSWORD'` in the download command and `USER:PASS` in `start_proxies.sh`
+
+> **Note:** These credentials may change if you regenerate them in the dashboard. If proxies suddenly fail with "SOCKS5 authentication failed", check if your credentials were rotated.
 
 ### 3. Set up cookies (optional but recommended)
 

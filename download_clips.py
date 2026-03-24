@@ -614,7 +614,19 @@ def download_one_url(
             wait = (3 ** attempt) + random.uniform(2, 5)
             time.sleep(wait)
 
-    # All retries exhausted. Last resort: try WITH a cookie (for age-restricted etc.)
+    # Fallback 1: try WITHOUT proxy (direct IP).
+    # "Page needs to be reloaded" and "Sign in to confirm" are proxy-IP-based
+    # bot detection. The server's direct IP is often not flagged.
+    rc, msg = _run_ytdlp_once(
+        url, section_args, output_dir,
+        None, browser, None, None, extractor_args,
+    )
+    if rc == 0:
+        return 0, msg
+    if classify_failure(msg) == "permanent":
+        return rc, msg
+
+    # Fallback 2: try WITH a cookie (for age-restricted etc.)
     cookie = pick_cookie()
     if cookie:
         proxy_url, http_port = pick_proxy()
