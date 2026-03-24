@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-download_clips_final_by_claude.py
-─────────────────────────────────
+download_clips.py
+──────────────────
 Fast parallel YouTube clip downloader with:
   - Round-robin proxy rotation (NordVPN SOCKS5 via socks_to_http_proxy.py)
   - Round-robin cookie rotation (multiple YouTube account cookies)
@@ -11,7 +11,7 @@ Fast parallel YouTube clip downloader with:
   - Video-only output in a flat directory
 
 Usage example:
-    python download_clips_final_by_claude.py \
+    python download_clips.py \
         --input ./filtered_video_clips.json \
         --output ./videos_output \
         --cookies-dir ./cookies_pool \
@@ -981,7 +981,7 @@ def main() -> None:
         raise RuntimeError("ffmpeg not found — required for yt-dlp segment cutting")
 
     args = parse_args()
-    print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] download_clips_final_by_claude.py")
+    print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] download_clips.py")
 
     # Build proxy configs
     proxy_configs = build_proxy_configs(args.proxy_list, args.proxy_creds, args.proxy)

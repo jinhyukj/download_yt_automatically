@@ -15,7 +15,7 @@ Downloads video clips specified in a JSON file using yt-dlp, with:
 
 | File | Description |
 |------|-------------|
-| `download_clips_final_by_claude.py` | Main download pipeline |
+| `download_clips.py` | Main download pipeline |
 | `socks_to_http_proxy.py` | HTTP-to-SOCKS5 proxy bridge (one per region) |
 | `start_proxies.sh` | Helper script to start all 9 proxy bridges at once |
 | `cookie_refresher.py` | Runs on your local machine to export & upload fresh cookies |
@@ -181,7 +181,7 @@ The included dataset is at `../TalkVid_Data/data/filtered_video_clips.json`.
 ## Running the Pipeline
 
 ```bash
-python download_clips_final_by_claude.py \
+python download_clips.py \
     --input ../TalkVid_Data/data/filtered_video_clips.json \
     --output ./videos_output \
     --cookies-dir ./cookies_pool \
