@@ -612,6 +612,17 @@ def download_one_url(
             if sem:
                 sem.release()
 
+    # Phrases indicating YouTube bot detection (proxy IP flagged, not a video problem)
+    BOT_DETECTION_PHRASES = [
+        "sign in to confirm",
+        "confirm you're not a bot",
+        "page needs to be reloaded",
+    ]
+
+    def is_bot_detection(error_msg: str) -> bool:
+        msg_lower = error_msg.lower()
+        return any(p in msg_lower for p in BOT_DETECTION_PHRASES)
+
     last_err = ""
     for attempt in range(max_retries):
         proxy_url, http_port = pick_proxy()
@@ -628,14 +639,18 @@ def download_one_url(
         if failure_type == "permanent":
             return rc, msg, "proxy"
 
-        # Transient: backoff with longer waits to let NordVPN recover
+        # Bot detection (sign in, page reload) = proxy IP is flagged.
+        # Don't waste more proxy retries — fall through to direct immediately.
+        if is_bot_detection(msg):
+            break
+
+        # Other transient errors (socks, timeout): retry with a different proxy
         if attempt < max_retries - 1:
-            wait = (3 ** attempt) + random.uniform(2, 5)
+            wait = (2 ** attempt) + random.uniform(1, 3)
             time.sleep(wait)
 
     # Fallback 1: try WITHOUT proxy (direct IP).
-    # "Page needs to be reloaded" and "Sign in to confirm" are proxy-IP-based
-    # bot detection. The server's direct IP is often not flagged.
+    # Bot detection is proxy-IP-based; the server's direct IP is usually clean.
     rc, msg = _run_ytdlp_once(
         url, section_args, output_dir,
         None, browser, None, None, extractor_args,
@@ -645,7 +660,7 @@ def download_one_url(
     if classify_failure(msg) == "permanent":
         return rc, msg, "direct"
 
-    # Fallback 2: try WITH a cookie (for age-restricted etc.)
+    # Fallback 2: try WITH a cookie + proxy (for age-restricted etc.)
     cookie = pick_cookie()
     if cookie:
         proxy_url, http_port = pick_proxy()
@@ -654,9 +669,17 @@ def download_one_url(
         )
         if rc == 0:
             return 0, msg, "proxy+cookie"
-        # "format not available" from cookie is a cookie problem, not permanent
         if "requested format is not available" in msg.lower():
             return 1, last_err, "proxy+cookie"
+        # Last try: cookie + direct (no proxy)
+        rc, msg = _run_ytdlp_once(
+            url, section_args, output_dir,
+            cookie, browser, None, None, extractor_args,
+        )
+        if rc == 0:
+            return 0, msg, "direct+cookie"
+        if "requested format is not available" in msg.lower():
+            return 1, last_err, "direct+cookie"
         last_err = msg
 
     return 1, last_err, "failed"
@@ -742,7 +765,7 @@ def _format_method_counts(method_counts: dict) -> str:
     if not method_counts:
         return "none"
     parts = []
-    for method in ["proxy", "direct", "proxy+cookie"]:
+    for method in ["proxy", "direct", "proxy+cookie", "direct+cookie"]:
         if method in method_counts:
             parts.append(f"{method}: {method_counts[method]}")
     return ", ".join(parts) if parts else "none"
