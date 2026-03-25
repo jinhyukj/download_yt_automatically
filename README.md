@@ -19,7 +19,8 @@ Downloads video clips specified in a JSON file using yt-dlp, with:
 |------|-------------|
 | `download_clips.py` | Main download pipeline |
 | `socks_to_http_proxy.py` | HTTP-to-SOCKS5 proxy bridge (one per region) |
-| `start_proxies.sh` | Helper script to start all 9 proxy bridges at once |
+| `start_proxies.sh` | Start all 9 NordVPN proxy bridges at once |
+| `start_torguard_proxies.sh` | Start all 10 Torguard proxy bridges at once |
 | `cookie_refresher.py` | Runs on your local machine to export & upload fresh cookies |
 | `ffmpeg_wrapper/ffmpeg` | Wrapper that injects proxy settings into ffmpeg calls |
 | `cookies_pool/` | Directory for cookie files (one per YouTube account) |
@@ -100,6 +101,30 @@ The credentials used here are **not** your NordVPN account email/password. They 
 6. Use them as `--proxy-creds 'USERNAME:PASSWORD'` in the download command and `USER:PASS` in `start_proxies.sh`
 
 > **Note:** These credentials may change if you regenerate them in the dashboard. If proxies suddenly fail with "SOCKS5 authentication failed", check if your credentials were rotated.
+
+### 2b. Start Torguard proxy bridges (recommended)
+
+NordVPN datacenter IPs are broadly flagged by YouTube's bot detection. Torguard provides additional SOCKS5 proxies with cleaner IPs. Using both together gives you more IPs and better success rates.
+
+**Sign up:** [torguard.net/anonymous-bittorrent-proxy](https://torguard.net/anonymous-bittorrent-proxy/) ($5.95/month proxy plan)
+
+**Set up proxy credentials** (different from your account login):
+1. Log into torguard.net
+2. Go to **My Account** > **Change Passwords** (managecredentials.php)
+3. Set a **Proxy/SOCKS username** and **password**
+
+**Start the bridges:**
+```bash
+./start_torguard_proxies.sh 'YOUR_TORGUARD_USER:YOUR_TORGUARD_PASS'
+```
+
+This starts 10 proxy bridges on ports 9080-9089 across Canada (Montreal), Netherlands (Amsterdam), and UK (London).
+
+| Region | IPs | Ports |
+|--------|-----|-------|
+| Canada - Montreal | 4 IPs (different subnets) | 9080-9083 |
+| Netherlands - Amsterdam | 3 IPs | 9084-9086 |
+| UK - London | 3 IPs | 9087-9089 |
 
 ### 3. Set up cookies (optional but recommended)
 
@@ -193,6 +218,33 @@ The included dataset is at `../TalkVid_Data/data/filtered_video_clips.json`.
 
 ## Running the Pipeline
 
+**NordVPN + Torguard combined** (recommended — 19 proxy IPs):
+```bash
+python download_clips.py \
+    --input ../TalkVid_Data/data/filtered_video_clips.json \
+    --output ./videos_output \
+    --cookies-dir ./cookies_pool \
+    --proxy-list new-york,los-angeles,chicago,dallas,atlanta,san-francisco,phoenix,amsterdam,stockholm \
+    --proxy-creds 'YOUR_NORDVPN_USER:YOUR_NORDVPN_PASS' \
+    --torguard-list all \
+    --torguard-creds 'YOUR_TORGUARD_USER:YOUR_TORGUARD_PASS' \
+    --workers 18 \
+    --slack-webhook "https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK"
+```
+
+**Torguard only** (if you don't have NordVPN):
+```bash
+python download_clips.py \
+    --input ../TalkVid_Data/data/filtered_video_clips.json \
+    --output ./videos_output \
+    --cookies-dir ./cookies_pool \
+    --torguard-list all \
+    --torguard-creds 'YOUR_TORGUARD_USER:YOUR_TORGUARD_PASS' \
+    --workers 18 \
+    --slack-webhook "https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK"
+```
+
+**NordVPN only:**
 ```bash
 python download_clips.py \
     --input ../TalkVid_Data/data/filtered_video_clips.json \
@@ -216,6 +268,8 @@ python download_clips.py \
 | `--proxy-list` | None | Comma-separated NordVPN region names |
 | `--proxy-creds` | None | NordVPN SOCKS5 credentials (`user:pass`) |
 | `--proxy` | None | Single proxy URL (instead of `--proxy-list`) |
+| `--torguard-list` | None | Comma-separated Torguard proxy names or `all` |
+| `--torguard-creds` | None | Torguard SOCKS5 credentials (`user:pass`) |
 | `--slack-webhook` | None | Slack webhook URL for notifications |
 | `--slack-interval` | 10 | Send Slack update every N URLs processed |
 | `--limit` | None | Max segments to process (for testing) |

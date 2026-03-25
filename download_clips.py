@@ -302,18 +302,41 @@ def load_cookie_pool(cookies_dir: Optional[str], single_cookie: Optional[str]) -
 
 # ── Proxy configs ────────────────────────────────────────────────────────────
 
+TORGUARD_PROXIES = {
+    # Torguard SOCKS5 IPs with HTTP bridge ports (9080-9089)
+    # Canada - Montreal
+    "tg-ca1": ("89.47.234.26", 9080),
+    "tg-ca2": ("86.106.90.226", 9081),
+    "tg-ca3": ("176.113.74.74", 9082),
+    "tg-ca4": ("146.70.27.218", 9083),
+    # Netherlands - Amsterdam
+    "tg-nl1": ("77.243.189.162", 9084),
+    "tg-nl2": ("77.243.189.163", 9085),
+    "tg-nl3": ("77.243.189.164", 9086),
+    # UK - London
+    "tg-uk1": ("146.70.95.26", 9087),
+    "tg-uk2": ("146.70.95.74", 9088),
+    "tg-uk3": ("146.70.95.27", 9089),
+}
+
+
 def build_proxy_configs(
     proxy_list: Optional[str],
     proxy_creds: Optional[str],
     single_proxy: Optional[str],
+    torguard_list: Optional[str] = None,
+    torguard_creds: Optional[str] = None,
 ) -> List[Tuple[str, int]]:
     """Return list of (socks5_url, http_proxy_port) tuples.
 
-    yt-dlp uses the socks5h URL directly (it has native SOCKS5 support).
+    yt-dlp uses the socks5h URL directly (native SOCKS5 support).
     ffmpeg uses the HTTP bridge (socks_to_http_proxy.py) on the given port.
+    Supports both NordVPN and Torguard proxies, combined in one pool.
     """
+    configs: List[Tuple[str, int]] = []
+
+    # NordVPN-style named proxies
     if proxy_list and proxy_creds:
-        configs = []
         for name in proxy_list.split(","):
             name = name.strip()
             if name in PROXY_HOSTNAMES:
@@ -321,21 +344,39 @@ def build_proxy_configs(
                 url = f"socks5h://{proxy_creds}@{hostname}:1080"
                 configs.append((url, port))
             else:
-                print(f"Warning: unknown proxy name '{name}', skipping")
-        return configs
-    if single_proxy:
-        return [(single_proxy, 8080)]
-    return []
+                print(f"Warning: unknown NordVPN proxy name '{name}', skipping")
+
+    # Torguard proxies
+    if torguard_list and torguard_creds:
+        for name in torguard_list.split(","):
+            name = name.strip()
+            if name == "all":
+                # Add all Torguard proxies
+                for tg_name, (ip, port) in sorted(TORGUARD_PROXIES.items()):
+                    url = f"socks5h://{torguard_creds}@{ip}:1080"
+                    configs.append((url, port))
+            elif name in TORGUARD_PROXIES:
+                ip, port = TORGUARD_PROXIES[name]
+                url = f"socks5h://{torguard_creds}@{ip}:1080"
+                configs.append((url, port))
+            else:
+                print(f"Warning: unknown Torguard proxy name '{name}', skipping")
+
+    if not configs and single_proxy:
+        configs.append((single_proxy, 8080))
+
+    return configs
 
 
 def check_proxy_health(proxy_configs: List[Tuple[str, int]]) -> List[Tuple[str, int]]:
-    """Test each proxy and return only the working ones."""
+    """Test each proxy via its HTTP bridge and return only the working ones."""
     if not proxy_configs:
         return proxy_configs
     import urllib.request as ur
     healthy = []
     for proxy_url, port in proxy_configs:
         http_bridge = f"http://127.0.0.1:{port}"
+        host_label = proxy_url.split("@")[-1] if "@" in proxy_url else proxy_url
         try:
             handler = ur.ProxyHandler({"http": http_bridge, "https": http_bridge})
             opener = ur.build_opener(handler)
@@ -343,8 +384,7 @@ def check_proxy_health(proxy_configs: List[Tuple[str, int]]) -> List[Tuple[str, 
             resp.read()
             healthy.append((proxy_url, port))
         except Exception as e:
-            host = proxy_url.split("@")[-1] if "@" in proxy_url else proxy_url
-            print(f"  DEAD: {host} (port {port}) — {e}")
+            print(f"  DEAD: {host_label} (bridge :{port}) — {e}")
     return healthy
 
 
@@ -624,10 +664,18 @@ def download_one_url(
         return any(p in msg_lower for p in BOT_DETECTION_PHRASES)
 
     last_err = ""
+    tried_ports: set = set()  # track which proxy ports we've tried
     for attempt in range(max_retries):
+        # Pick a proxy we haven't tried yet (if possible)
         proxy_url, http_port = pick_proxy()
+        for _ in range(max_retries):  # try up to max_retries times to find a fresh proxy
+            if http_port not in tried_ports or proxy_pool is None:
+                break
+            if proxy_pool.healthy_count <= len(tried_ports):
+                break  # we've exhausted all unique proxies
+            proxy_url, http_port = pick_proxy()
+        tried_ports.add(http_port)
 
-        # Always try without cookie files — cookies cause YouTube to restrict formats.
         rc, msg = run_with_semaphore(
             None, browser, proxy_url, http_port, extractor_args,
         )
@@ -639,18 +687,28 @@ def download_one_url(
         if failure_type == "permanent":
             return rc, msg, "proxy"
 
-        # Bot detection (sign in, page reload) = proxy IP is flagged.
-        # Don't waste more proxy retries — fall through to direct immediately.
-        if is_bot_detection(msg):
-            break
-
-        # Other transient errors (socks, timeout): retry with a different proxy
-        if attempt < max_retries - 1:
+        # Bot detection = this proxy IP is flagged. Try next proxy immediately (no wait).
+        # Socks/timeout errors = NordVPN overload. Wait before retrying.
+        if not is_bot_detection(msg) and attempt < max_retries - 1:
             wait = (2 ** attempt) + random.uniform(1, 3)
             time.sleep(wait)
 
-    # Fallback 1: try WITHOUT proxy (direct IP).
-    # Bot detection is proxy-IP-based; the server's direct IP is usually clean.
+    # Fallback 1: try WITH a cookie + proxy (for bot-detected / age-restricted)
+    cookie = pick_cookie()
+    if cookie:
+        proxy_url, http_port = pick_proxy()
+        rc, msg = run_with_semaphore(
+            cookie, browser, proxy_url, http_port, extractor_args,
+        )
+        if rc == 0:
+            return 0, msg, "proxy+cookie"
+        # "format not available" from cookie is a cookie problem, not permanent
+        if "requested format is not available" in msg.lower():
+            pass  # fall through to direct
+        else:
+            last_err = msg
+
+    # Fallback 2: try WITHOUT proxy (direct IP, no cookies).
     rc, msg = _run_ytdlp_once(
         url, section_args, output_dir,
         None, browser, None, None, extractor_args,
@@ -660,18 +718,8 @@ def download_one_url(
     if classify_failure(msg) == "permanent":
         return rc, msg, "direct"
 
-    # Fallback 2: try WITH a cookie + proxy (for age-restricted etc.)
-    cookie = pick_cookie()
+    # Fallback 3: direct IP + cookie (last resort)
     if cookie:
-        proxy_url, http_port = pick_proxy()
-        rc, msg = run_with_semaphore(
-            cookie, browser, proxy_url, http_port, extractor_args,
-        )
-        if rc == 0:
-            return 0, msg, "proxy+cookie"
-        if "requested format is not available" in msg.lower():
-            return 1, last_err, "proxy+cookie"
-        # Last try: cookie + direct (no proxy)
         rc, msg = _run_ytdlp_once(
             url, section_args, output_dir,
             cookie, browser, None, None, extractor_args,
@@ -1079,6 +1127,15 @@ def parse_args() -> argparse.Namespace:
         "--proxy-creds", type=str, default=None,
         help="NordVPN SOCKS5 credentials (user:pass)",
     )
+    p.add_argument(
+        "--torguard-list", type=str, default=None,
+        help="Comma-separated Torguard proxy names (tg-ca1,tg-nl1,tg-uk1,...) or 'all'. "
+             "Requires --torguard-creds. Run start_torguard_proxies.sh first.",
+    )
+    p.add_argument(
+        "--torguard-creds", type=str, default=None,
+        help="Torguard SOCKS5 credentials (user:pass)",
+    )
     # ── Slack ──
     p.add_argument(
         "--slack-webhook", type=str, default=None,
@@ -1104,12 +1161,15 @@ def main() -> None:
     print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] download_clips.py")
 
     # Build proxy configs
-    proxy_configs = build_proxy_configs(args.proxy_list, args.proxy_creds, args.proxy)
+    proxy_configs = build_proxy_configs(
+        args.proxy_list, args.proxy_creds, args.proxy,
+        args.torguard_list, args.torguard_creds,
+    )
     if proxy_configs:
         print(f"Proxies ({len(proxy_configs)}):")
         for pu, pp in proxy_configs:
             host = pu.split("@")[-1] if "@" in pu else pu
-            print(f"  {host} → http://127.0.0.1:{pp}")
+            print(f"  {host} → bridge :{pp}")
 
     # Build cookie pool
     cookie_pool = load_cookie_pool(args.cookies_dir, args.cookies)
