@@ -250,12 +250,14 @@ Permanent errors (video unavailable, account terminated, no video streams) stop 
 
 Cookies are **avoided by default** because they can cause YouTube to restrict video format availability (returning only storyboard images instead of real video). They are only used as a last-resort fallback after all proxy retries and the direct-IP fallback have failed.
 
-### Resume
+### Resume & interrupted downloads
 
 The pipeline is fully re-runnable. Just run the same command again:
-- Already-downloaded clips are skipped (checked via `json_logs/`)
-- Permanently unavailable videos are skipped (checked via cumulative `logs/permanent_failures.txt`)
-- Previously-failed transient errors (socks error, rate limit, etc.) are retried
+- **Completed clips** are skipped (checked via `json_logs/`)
+- **Permanently unavailable videos** are skipped (checked via cumulative `logs/permanent_failures.txt`)
+- **Partially downloaded files** (`.part`) from interrupted runs are resumed automatically — yt-dlp picks up where it left off instead of starting over
+- **Stale `.part` files** older than 24 hours are cleaned up at startup (truly abandoned downloads)
+- **Transient failures** (socks error, rate limit, etc.) are retried
 
 ### Slack Notifications
 

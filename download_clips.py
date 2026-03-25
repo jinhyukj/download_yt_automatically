@@ -25,10 +25,12 @@ import argparse
 import json
 import math
 import os
+import random
 import shutil
 import subprocess
 import sys
 import threading
+import time
 import urllib.request
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -96,6 +98,26 @@ SLACK_REPORT_INTERVAL = 10  # Send Slack update every N URLs processed
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
+
+def cleanup_stale_parts(output_dir: str, max_age_hours: int = 24) -> int:
+    """Remove .part files older than max_age_hours. Returns count of deleted files."""
+    if not os.path.isdir(output_dir):
+        return 0
+    now = time.time()
+    max_age_sec = max_age_hours * 3600
+    deleted = 0
+    for f in os.listdir(output_dir):
+        if f.endswith(".part") or f.endswith(".part-Frag0"):
+            fp = os.path.join(output_dir, f)
+            try:
+                age = now - os.path.getmtime(fp)
+                if age > max_age_sec:
+                    os.remove(fp)
+                    deleted += 1
+            except OSError:
+                pass
+    return deleted
+
 
 def get_video_id(url: str) -> str:
     if "watch?v=" in url:
@@ -461,9 +483,6 @@ def build_ytdlp_base(
 
 # ── Single-URL download function (called by workers) ────────────────────────
 
-import time
-import random
-
 
 def _run_ytdlp_once(
     url: str,
@@ -494,7 +513,7 @@ def _run_ytdlp_once(
         # to avoid overwhelming SOCKS proxies (NordVPN throttles on too many connections)
         "--no-warnings",
         "--restrict-filenames",
-        "--no-continue", "--no-overwrites",
+        "--continue", "--no-overwrites",
         "--print", "after_move:filepath",
         "--no-write-subs",
         "--no-write-auto-subs",
@@ -801,6 +820,11 @@ def run_downloads(
     safe_mkdir(output_dir)
     json_logs_dir = os.path.join(output_dir, "json_logs")
     safe_mkdir(json_logs_dir)
+
+    # Clean up stale .part files from interrupted previous runs (older than 24h)
+    stale_count = cleanup_stale_parts(output_dir, max_age_hours=24)
+    if stale_count:
+        print(f"Cleaned up {stale_count} stale .part files (older than 24h)")
 
     # Per-run log directory named by start time (e.g. logs/2026-03-24_19-35-12/)
     run_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
