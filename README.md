@@ -23,7 +23,8 @@ Downloads video clips specified in a JSON file using yt-dlp, with:
 | `start_torguard_all.sh` | **Recommended**: Start all 50 Torguard proxy bridges |
 | `start_torguard_proxies.sh` | Start 10 Torguard proxy bridges (lighter) |
 | `start_proxies.sh` | Start 9 NordVPN proxy bridges (optional) |
-| `cookie_refresher.py` | Runs on your local machine to export & upload fresh cookies |
+| `cookie_refresher.py` | Export & upload cookies from a single Chrome profile |
+| `cookie_refresher_v2.py` | **Recommended**: Export & upload cookies from multiple Chrome profiles at once |
 | `ffmpeg_wrapper/ffmpeg` | Wrapper that injects proxy settings into ffmpeg calls |
 | `cookies_pool/` | Directory for cookie files (one per YouTube account) |
 
@@ -118,28 +119,39 @@ Cookies are used as a **last resort** when YouTube requires authentication (e.g.
 
 > **Note:** If your Google accounts have been used for bulk downloading with yt-dlp before, they are likely flagged by YouTube and the cookies will cause "format not available" errors. Fresh accounts that have never been used for automated downloads are needed for cookies to work.
 
-#### Keeping cookies fresh with cookie_refresher.py
+#### Keeping cookies fresh
 
-YouTube cookies expire frequently. Run `cookie_refresher.py` **on your local machine** (where you have a browser with YouTube logged in) to periodically export fresh cookies and upload them to the download server.
+YouTube cookies expire frequently. Run the cookie refresher **on your local machine** (where you have a browser with YouTube logged in) to periodically export fresh cookies and upload them to the download server.
 
+**cookie_refresher_v2.py** (recommended) — handles all profiles in a single process with retry logic:
+
+1. Edit the `PROFILES` list in `cookie_refresher_v2.py` to match your Chrome profiles:
+   ```python
+   PROFILES = [
+       "Default",
+       "Profile 1",
+       "Profile 2",
+       # Add more...
+   ]
+   ```
+   Check profile names in `chrome://version/` (the Profile Path shows the directory name).
+
+2. Run it:
+   ```bash
+   python cookie_refresher_v2.py \
+       --remote-host user@your-server \
+       --remote-dir /path/to/cookies_pool \
+       --interval 25
+   ```
+   This exports cookies from all profiles every 25 minutes and uploads each as a separate file (e.g., `live_cookies_chrome_Default.txt`, `live_cookies_chrome_Profile_1.txt`).
+
+**cookie_refresher.py** — single-profile alternative (run one instance per profile):
 ```bash
-# Single account
-python cookie_refresher.py \
-    --remote-host user@your-server \
-    --remote-path /path/to/cookies_pool/account1.txt \
-    --browser chrome \
-    --interval 25
-
-# Multiple accounts — run one instance per Chrome profile, each in a separate terminal:
 python cookie_refresher.py --remote-host user@server --remote-path /path/to/cookies_pool/account1.txt --browser chrome
 python cookie_refresher.py --remote-host user@server --remote-path /path/to/cookies_pool/account2.txt --browser "chrome:Profile 2"
-python cookie_refresher.py --remote-host user@server --remote-path /path/to/cookies_pool/account3.txt --browser "chrome:Profile 3"
 ```
 
-To set up multiple Chrome profiles:
-1. Open Chrome, click your profile icon (top right) > **Add**
-2. Sign in to a **different Google account** in each profile (new profiles with the same account won't help)
-3. Check the profile name in `chrome://version/`
+**Important:** Each Chrome profile must be signed in to a **different Google account**. Multiple profiles on the same account won't help — YouTube flags per account, not per profile.
 
 ## Input JSON Format
 
