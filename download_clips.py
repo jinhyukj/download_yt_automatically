@@ -619,7 +619,7 @@ def download_one_url(
     browser: Optional[str],
     proxy_pool: Optional["ProxyPool"],
     extractor_args: Optional[str],
-    max_retries: int = 5,
+    max_retries: int = 10,
     _cookie_counter: Optional[List[int]] = None,
     _counter_lock: Optional[threading.Lock] = None,
 ) -> Tuple[int, str]:
@@ -1025,7 +1025,7 @@ def run_downloads(
                 url, segs, output_dir,
                 cookie_pool, browser,
                 proxy_pool, extractor_args,
-                5,  # max_retries
+                10,  # max_retries
                 cookie_counter, counter_lock,
             )
             futures[fut] = (url, segs)
